@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Employee FAQ Bot</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif; }
+    body { margin: 0; background:#f6f7f9; }
+    .wrap { max-width: 760px; margin: 40px auto; padding: 24px; background:#fff; border-radius:16px; box-shadow: 0 8px 30px rgba(0,0,0,.06); }
+    h1 { margin:0 0 16px; font-size: 22px; }
+    .row { display:flex; gap:8px; }
+    input[type="text"] { flex:1; padding:12px 14px; border:1px solid #d7dbe3; border-radius:10px; outline:none; }
+    button { padding:12px 16px; border:0; border-radius:10px; background:#2563eb; color:#fff; cursor:pointer; }
+    button:disabled { opacity:.6; cursor:not-allowed; }
+    .answer { margin-top:16px; padding:14px; background:#f1f5ff; border:1px solid #d7e2ff; border-radius:10px; white-space:pre-wrap; }
+    .msg { margin-top:12px; color:#555; font-size:14px; }
+    .list { margin-top:16px; display:grid; gap:8px; }
+    .bubble { padding:12px 14px; border-radius:12px; background:#eef2f7; }
+    .you { background:#e8f0ff; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Employee FAQ Bot</h1>
+    <div class="row">
+      <input id="q" type="text" placeholder="Ask a question (e.g., How to recruit)" />
+      <button id="askBtn">Ask</button>
+    </div>
+    <div id="msg" class="msg"></div>
+    <div id="answer" class="answer" style="display:none"></div>
+
+    <div id="history" class="list"></div>
+  </div>
+
+  <script>
+    const qEl = document.getElementById('q');
+    const btn = document.getElementById('askBtn');
+    const msg = document.getElementById('msg');
+    const ans = document.getElementById('answer');
+    const history = document.getElementById('history');
+
+    async function ask() {
+      const q = qEl.value.trim();
+      if (!q) return;
+      btn.disabled = true;
+      msg.textContent = 'Thinking…';
+      ans.style.display = 'none';
+
+      try {
+        const res = await fetch(`/api/ask?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+
+        // Show answer
+        ans.style.display = 'block';
+        ans.textContent = data.answer || 'No answer found.';
+
+        // Add to mini history
+        const you = document.createElement('div');
+        you.className = 'bubble you';
+        you.textContent = q;
+        const bot = document.createElement('div');
+        bot.className = 'bubble';
+        bot.textContent = data.answer || 'No answer found.';
+        history.prepend(bot);
+        history.prepend(you);
+      } catch (e) {
+        ans.style.display = 'block';
+        ans.textContent = 'Error contacting the server.';
+      } finally {
+        btn.disabled = false;
+        msg.textContent = '';
+        qEl.select();
+      }
+    }
+
+    btn.addEventListener('click', ask);
+    qEl.addEventListener('keydown', (e) => (e.key === 'Enter') && ask());
+  </script>
+</body>
+</html>
