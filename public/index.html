@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Employee FAQ Bot</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 600px;
+      margin: 50px auto;
+      padding: 20px;
+      background: #f9f9f9;
+    }
+    h1 {
+      text-align: center;
+    }
+    input, button {
+      padding: 10px;
+      font-size: 16px;
+    }
+    input {
+      width: 75%;
+    }
+    button {
+      width: 20%;
+      margin-left: 5px;
+    }
+    #response {
+      margin-top: 20px;
+      padding: 15px;
+      background: white;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      min-height: 40px;
+    }
+  </style>
+</head>
+<body>
+  <h1>Employee FAQ Bot</h1>
+  <div>
+    <input type="text" id="question" placeholder="Ask me anything..." />
+    <button onclick="ask()">Ask</button>
+  </div>
+  <div id="response"></div>
+
+  <script>
+    async function ask() {
+      const q = document.getElementById("question").value;
+      const res = await fetch(`/api/ask?q=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      document.getElementById("response").innerText = data.answer || "No answer found.";
+    }
+  </script>
+</body>
+</html>
