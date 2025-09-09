@@ -1,0 +1,45 @@
+<!doctype html><html><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Employee FAQ</title>
+<style>
+:root{--r:14px}*{box-sizing:border-box}
+body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;margin:0;background:#fafafa}
+.wrap{max-width:780px;margin:0 auto;padding:18px}
+h1{font-size:18px;margin:0 0 10px}
+.bar{display:flex;gap:8px}
+input{flex:1;padding:12px;border:1px solid #e5e5e5;border-radius:var(--r);font-size:16px;background:#fff}
+button{padding:12px 14px;border:1px solid #e5e5e5;border-radius:var(--r);background:#fff;cursor:pointer}
+.card{margin-top:12px;border:1px solid #eee;border-radius:var(--r);padding:14px;background:#fff}
+.q{font-weight:600;margin-bottom:6px}.a{white-space:pre-wrap}
+.muted{color:#666;font-size:12px;margin-top:8px}
+</style>
+</head><body>
+<div class="wrap">
+  <h1>Employee FAQ</h1>
+  <div class="bar">
+    <input id="q" placeholder="Ask a question…" autocomplete="off"/>
+    <button id="go">Ask</button>
+  </div>
+  <div id="result" class="card" style="display:none">
+    <div class="q"></div><div class="a"></div><div class="muted" id="meta"></div>
+  </div>
+  <div id="empty" class="muted" style="margin-top:8px"></div>
+</div>
+<script>
+function show(r){
+  const card=document.getElementById('result'); const empty=document.getElementById('empty');
+  if(!r||!r.answer){card.style.display='none'; empty.textContent='No match found.'; return;}
+  empty.textContent=''; card.style.display='block';
+  card.querySelector('.q').textContent=r.question||'Best match';
+  card.querySelector('.a').textContent=r.answer;
+  document.getElementById('meta').textContent='Confidence: '+(r.score?Math.round(r.score*100):0)+'%';
+}
+async function ask(){
+  const q=document.getElementById('q').value.trim(); if(!q) return;
+  const res=await fetch('/api/ask?q='+encodeURIComponent(q));
+  show(await res.json());
+}
+document.getElementById('go').onclick=ask;
+document.getElementById('q').addEventListener('keydown',e=>{ if(e.key==='Enter') ask(); });
+</script>
+</body></html>
