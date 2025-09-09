@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Employee FAQ Bot</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      background: #f4f6f9;
+    }
+    #chat {
+      max-width: 600px;
+      margin: auto;
+      background: white;
+      border-radius: 8px;
+      padding: 20px;
+      box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    .message {
+      margin: 10px 0;
+      padding: 10px;
+      border-radius: 6px;
+    }
+    .user {
+      background: #d1e7ff;
+      text-align: right;
+    }
+    .bot {
+      background: #e8e8e8;
+      text-align: left;
+    }
+    #input-area {
+      margin-top: 15px;
+      display: flex;
+    }
+    input {
+      flex: 1;
+      padding: 10px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+    }
+    button {
+      margin-left: 8px;
+      padding: 10px 15px;
+      border: none;
+      border-radius: 6px;
+      background: #007bff;
+      color: white;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div id="chat">
+    <div id="messages"></div>
+    <div id="input-area">
+      <input id="question" type="text" placeholder="Ask a question..." />
+      <button onclick="ask()">Send</button>
+    </div>
+  </div>
+
+  <script>
+    async function ask() {
+      const question = document.getElementById("question").value;
+      if (!question) return;
+
+      // Show user message
+      const userMsg = document.createElement("div");
+      userMsg.className = "message user";
+      userMsg.textContent = question;
+      document.getElementById("messages").appendChild(userMsg);
+
+      // Call your API route
+      const res = await fetch("/api/faq?question=" + encodeURIComponent(question));
+      const data = await res.json();
+
+      // Show bot answer
+      const botMsg = document.createElement("div");
+      botMsg.className = "message bot";
+      botMsg.textContent = data.answer || "I don’t know yet.";
+      document.getElementById("messages").appendChild(botMsg);
+
+      document.getElementById("question").value = "";
+    }
+  </script>
+</body>
+</html>
