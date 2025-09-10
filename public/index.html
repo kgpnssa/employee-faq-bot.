@@ -1,63 +1,172 @@
-<script>
-  const log = document.getElementById('log');
-  const form = document.getElementById('form');
-  const input = document.getElementById('q');
-
-  function addBubble(role, text) {
-    const div = document.createElement('div');
-    div.className = 'row ' + (role === 'user' ? 'user' : 'bot');
-    div.textContent = text;
-    log.appendChild(div);
-    log.scrollTop = log.scrollHeight;
-  }
-
-  async function askServer(q) {
-    try {
-      // ✅ Correct use of backticks for template string
-      const res  = await fetch(`/api/ask?q=${encodeURIComponent(q)}`);
-      const data = await res.json();
-      return data.answer ?? data.error ?? "Sorry, I couldn't find an answer.";
-    } catch (e) {
-      return "Sorry, something went wrong.";
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Employee Handbook FAQ</title>
+  <style>
+    :root {
+      --bg: #f7f7f9;
+      --card: #fff;
+      --bot: #e0e0e0;
+      --user: #1a73e8;
+      --user-text: #fff;
+      --shadow: 0 10px 25px rgba(28,39,80,.08), 0 2px 8px rgba(28,39,80,.06);
+      --radius: 16px;
     }
-  }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      background: var(--bg);
+      display: flex;
+      justify-content: center;
+      padding: 40px;
+    }
+    .shell {
+      width: 100%;
+      max-width: 480px;
+    }
+    h1 {
+      font-size: clamp(22px,4vw,32px);
+      text-align: center;
+      margin-bottom: 24px;
+    }
+    .card {
+      background: var(--card);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      height: 600px;
+    }
+    .log {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px;
+    }
+    .row {
+      padding: 10px 14px;
+      border-radius: var(--radius);
+      margin: 6px 0;
+      max-width: 80%;
+      word-wrap: break-word;
+    }
+    .bot { background: var(--bot); align-self: flex-start; }
+    .user { background: var(--user); color: var(--user-text); align-self: flex-end; }
+    form {
+      display: flex;
+      margin-top: 10px;
+      gap: 8px;
+    }
+    input {
+      flex: 1;
+      padding: 10px 14px;
+      border-radius: 999px;
+      border: 1px solid #ccc;
+      outline: none;
+    }
+    button {
+      background: var(--user);
+      color: var(--user-text);
+      border: none;
+      border-radius: 999px;
+      padding: 0 18px;
+      cursor: pointer;
+    }
+    .chips {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .chip {
+      background: #eef3ff;
+      color: #1a73e8;
+      border: none;
+      border-radius: 999px;
+      padding: 6px 12px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <h1>Employee Handbook FAQ</h1>
+    <div class="card">
+      <div class="chips">
+        <button class="chip" data-q="Hvordan kontakter jeg nye spillere?">Kontakt spillere</button>
+        <button class="chip" data-q="Hvor er kontoret?">Kontoradresse</button>
+        <button class="chip" data-q="Hvad er NSSA's mission?">Mission</button>
+      </div>
+      <div id="log" class="log"></div>
+      <form id="form">
+        <input id="q" type="text" placeholder="Skriv dit spørgsmål..." autocomplete="off" />
+        <button type="submit">Send</button>
+      </form>
+    </div>
+  </div>
 
-  async function send() {
-    const q = (input.value ?? '').trim();
-    if (!q) return;
-    addBubble('user', q);
-    input.value = '';
-    const reply = await askServer(q);
-    addBubble('bot', reply);
-  }
+  <script>
+    const log = document.getElementById('log');
+    const form = document.getElementById('form');
+    const input = document.getElementById('q');
 
-  // Submit with Enter
-  form.addEventListener('submit', (e) => {
-    e.preventDefault();
-    send();
-  });
+    function addBubble(role, text) {
+      const div = document.createElement('div');
+      div.className = 'row ' + (role === 'user' ? 'user' : 'bot');
+      div.textContent = text;
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+    }
 
-  // Submit with Enter even if Notion steals focus
-  input.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') {
+    async function askServer(q) {
+      try {
+        const res  = await fetch(`/api/ask?q=${encodeURIComponent(q)}`);
+        const data = await res.json();
+        return data.answer ?? data.error ?? "Sorry, I couldn't find an answer.";
+      } catch (e) {
+        return "Sorry, something went wrong.";
+      }
+    }
+
+    async function send() {
+      const q = (input.value ?? '').trim();
+      if (!q) return;
+      addBubble('user', q);
+      input.value = '';
+      const reply = await askServer(q);
+      addBubble('bot', reply);
+    }
+
+    form.addEventListener('submit', (e) => {
       e.preventDefault();
       send();
+    });
+
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        send();
+      }
+    });
+
+    document.querySelectorAll('.chip').forEach(btn => {
+      btn.addEventListener('click', () => sendFromChip(btn.dataset.q));
+    });
+
+    async function sendFromChip(q) {
+      if (!q) return;
+      addBubble('user', q);
+      input.value = '';
+      const reply = await askServer(q);
+      addBubble('bot', reply);
     }
-  });
 
-  // Quick chips
-  document.querySelectorAll('.chip').forEach(btn => {
-    btn.addEventListener('click', () => sendFromChip(btn.dataset.q));
-  });
-
-  async function sendFromChip(q) {
-    if (!q) return;
-    addBubble('user', q);
-    input.value = '';
-    const reply = await askServer(q);
-    addBubble('bot', reply);
-  }
-
-  // Optional greeting (no undefined anymore)
-  addBubble('bot', '👋 Hi! Ask me anything from your Employee Handbook.');
-</script>
+    // Initial greeting
+    addBubble('bot', '👋 Hi! Ask me anything from your Employee Handbook.');
+  </script>
+</body>
+</html>
