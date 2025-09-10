@@ -1,0 +1,10 @@
+{
+  "name": "employee-faq-bot",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@notionhq/client": "^2.2.13",
+    "openai": "^4.0.0",
+    "fuse.js": "^7.0.0"
+  }
+}
