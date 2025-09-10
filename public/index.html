@@ -1,117 +1,63 @@
-<!-- /public/index.html -->
-<!doctype html>
-<html lang="da">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Employee Handbook FAQ</title>
-  <style>
-    :root {
-      --bg: #f5f7fb;
-      --card: #ffffff;
-      --bot: #f0f4ff;
-      --user: #1a73e8;
-      --userText: #fff;
-      --muted: #6b7280;
-      --shadow: 0 10px 25px rgba(28,39,80,.08), 0 2px 8px rgba(28,39,80,.06);
-      --radius: 16px;
+<script>
+  const log = document.getElementById('log');
+  const form = document.getElementById('form');
+  const input = document.getElementById('q');
+
+  function addBubble(role, text) {
+    const div = document.createElement('div');
+    div.className = 'row ' + (role === 'user' ? 'user' : 'bot');
+    div.textContent = text;
+    log.appendChild(div);
+    log.scrollTop = log.scrollHeight;
+  }
+
+  async function askServer(q) {
+    try {
+      // ✅ Correct use of backticks for template string
+      const res  = await fetch(`/api/ask?q=${encodeURIComponent(q)}`);
+      const data = await res.json();
+      return data.answer ?? data.error ?? "Sorry, I couldn't find an answer.";
+    } catch (e) {
+      return "Sorry, something went wrong.";
     }
-    *{box-sizing:border-box} html,body{height:100%}
-    body{
-      margin:0;background:var(--bg);font:16px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;color:#0f172a;
-      display:flex;align-items:center;justify-content:center;padding:20px;
+  }
+
+  async function send() {
+    const q = (input.value ?? '').trim();
+    if (!q) return;
+    addBubble('user', q);
+    input.value = '';
+    const reply = await askServer(q);
+    addBubble('bot', reply);
+  }
+
+  // Submit with Enter
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    send();
+  });
+
+  // Submit with Enter even if Notion steals focus
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      send();
     }
-    .shell{width:min(860px,100%);margin:auto}
-    h1{font-size:clamp(22px,2.4vw,34px);text-align:center;margin:12px 0 22px}
-    .card{
-      background:var(--card);border-radius:24px;box-shadow:var(--shadow);
-      padding:24px 22px; margin:0 auto; width:min(760px,100%);
-    }
-    .greet{
-      background:var(--bot);padding:14px 16px;border-radius:14px; margin:0 0 14px 46px;
-    }
-    .row{display:flex;gap:10px;align-items:center}
-    .ava{width:28px;height:28px;border-radius:50%;background:#e5ecff;background-position:center;background-size:cover}
-    .log{display:flex;flex-direction:column;gap:10px;max-height:min(60vh,520px);overflow:auto;margin:12px 0 16px}
-    .b{max-width:75%;padding:12px 14px;border-radius:16px;box-shadow:0 1px 0 rgba(0,0,0,.03)}
-    .bot{background:var(--bot);align-self:flex-start;margin-left:36px}
-    .user{background:var(--user);color:var(--userText);align-self:flex-end;margin-right:6px}
-    .chips{display:flex;flex-wrap:wrap;gap:8px;margin:0 0 8px 36px}
-    .chip{padding:8px 11px;border-radius:999px;background:#e8eeff;color:#1e3a8a;font-size:14px;border:none;cursor:pointer}
-    .input{
-      display:flex;gap:8px;align-items:center;padding:8px;background:#f6f7fb;border-radius:999px;border:1px solid #e5e7eb;
-    }
-    input{flex:1;border:none;background:transparent;outline:none;padding:10px 12px;font-size:15px}
-    button.send{background:#1a73e8;color:#fff;border:none;border-radius:999px;padding:10px 16px;cursor:pointer}
-    .hint{color:var(--muted);text-align:center;font-size:12px;margin-top:8px}
-  </style>
-</head>
-<body>
-  <div class="shell">
-    <h1>Employee Handbook FAQ</h1>
-    <div class="card">
-      <div class="row">
-        <div class="ava" style="background-image:url('https://avatars.githubusercontent.com/u/9919?s=64&v=4')"></div>
-        <div class="greet">👋 Hi! Ask me anything from your Employee Handbook.</div>
-      </div>
+  });
 
-      <div class="chips">
-        <button class="chip" data-q="Hvordan kontakter jeg nye spillere?">Kontakt spillere</button>
-        <button class="chip" data-q="Hvor ligger kontoret?">Kontoradresse</button>
-        <button class="chip" data-q="Hvad er NSSA's mission?">Mission</button>
-      </div>
+  // Quick chips
+  document.querySelectorAll('.chip').forEach(btn => {
+    btn.addEventListener('click', () => sendFromChip(btn.dataset.q));
+  });
 
-      <div id="log" class="log"></div>
+  async function sendFromChip(q) {
+    if (!q) return;
+    addBubble('user', q);
+    input.value = '';
+    const reply = await askServer(q);
+    addBubble('bot', reply);
+  }
 
-      <form id="form" class="input">
-        <input id="q" type="text" placeholder="Skriv dit spørgsmål..." autocomplete="off" />
-        <button class="send">Send</button>
-      </form>
-
-      <div class="hint">Powered by your Notion DB</div>
-    </div>
-  </div>
-
-  <script>
-    const log = document.getElementById('log');
-    const form = document.getElementById('form');
-    const qInput = document.getElementById('q');
-
-    function addBubble(role, text) {
-      const div = document.createElement('div');
-      div.className = 'b ' + (role === 'user' ? 'user' : 'bot');
-      div.textContent = text || "…";
-      log.appendChild(div);
-      log.scrollTop = log.scrollHeight;
-    }
-
-    async function askServer(q) {
-      // Beskyt mod undefined i UI'et
-      let text = "Sorry, I couldn't find an answer.";
-      try {
-        const res = await fetch(`/api/ask?q=${encodeURIComponent(q)}`);
-        const data = await res.json();
-        text = (data && (data.answer || data.error)) ? (data.answer || data.error) : text;
-      } catch (e) { /* behold fallback */ }
-      return text;
-    }
-
-    async function send(q) {
-      q = (q ?? qInput.value || "").trim();
-      if (!q) return;
-      addBubble('user', q);
-      qInput.value = "";
-      const reply = await askServer(q);
-      addBubble('bot', reply);
-    }
-
-    form.addEventListener('submit', (e) => { e.preventDefault(); send(); });
-    document.querySelectorAll('.chip').forEach(btn => {
-      btn.addEventListener('click', () => send(btn.dataset.q));
-    });
-
-    // valgfrit: fokus på input ved load
-    qInput.focus();
-  </script>
-</body>
-</html>
+  // Optional greeting (no undefined anymore)
+  addBubble('bot', '👋 Hi! Ask me anything from your Employee Handbook.');
+</script>
