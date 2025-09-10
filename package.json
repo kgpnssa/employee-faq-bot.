@@ -1,10 +1,14 @@
 {
   "name": "employee-faq-bot",
   "version": "1.0.0",
+  "private": true,
   "type": "module",
+  "scripts": {
+    "build": "",
+    "start": ""
+  },
   "dependencies": {
-    "@notionhq/client": "^2.2.13",
-    "openai": "^4.0.0",
-    "fuse.js": "^7.0.0"
+    "@supabase/supabase-js": "^2.57.4",
+    "openai": "^4.52.1"
   }
 }
