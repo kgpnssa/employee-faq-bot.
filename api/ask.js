@@ -60,6 +60,31 @@ async function embed(text) {
  * - POST { q: "..." }
  */
 export default async function handler(req, res) {
+// ---- debug: env + input ---------------------------------
+const q = (req.query?.q ?? req.body?.q ?? "").toString();
+console.log("[ask] start", {
+  method: req.method,
+  qLen: q.length,
+  SUPABASE_URL: process.env.SUPABASE_URL,
+  hasSRK: !!process.env.SUPABASE_SERVICE_ROLE_KEY,
+  hasOPENAI: !!process.env.OPENAI_API_KEY,
+});
+
+// optional: quick Supabase ping to see if we can reach DB
+try {
+  const { data: ping, error: pingErr } = await supabase
+    .from("faqs")
+    .select("id")
+    .limit(1);
+  console.log("[ask] supabase ping", {
+    ok: !pingErr,
+    err: pingErr?.message,
+    count: ping?.length ?? 0,
+  });
+} catch (e) {
+  console.log("[ask] supabase ping threw", e?.message);
+}
+
   try {
     // CORS (optional, safe default)
     if (req.method === 'OPTIONS') {
