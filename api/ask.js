@@ -1,141 +1,153 @@
-// api/ask.js
+// /api/ask.js
 import { Client } from "@notionhq/client";
-
-// --- simple normalize + levenshtein for fuzzy ---
-const normalize = (s="") =>
-  s.toString().normalize("NFKD").replace(/\p{Diacritic}/gu,"").toLowerCase().trim();
-
-const levenshtein = (a, b) => {
-  a = normalize(a); b = normalize(b);
-  const m = a.length, n = b.length;
-  if (!m) return n; if (!n) return m;
-  const dp = Array.from({length:m+1}, (_,i)=>[i, ...Array(n).fill(0)]);
-  for (let j=1; j<=n; j++) dp[0][j] = j;
-  for (let i=1; i<=m; i++) {
-    for (let j=1; j<=n; j++) {
-      const cost = a[i-1] === b[j-1] ? 0 : 1;
-      dp[i][j] = Math.min(dp[i-1][j] + 1, dp[i][j-1] + 1, dp[i-1][j-1] + cost);
-    }
-  }
-  return dp[m][n];
-};
 
 const notion = new Client({ auth: process.env.NOTION_TOKEN });
 const DB_ID = process.env.NOTION_DB_ID;
+const OPENAI_API_KEY = process.env.OPENAI_API_KEY || ""; // valgfri
 
-const getRows = async () => {
-  const out = [];
+// --- Utils ---
+const plain = (arr = []) => arr.map(t => t.plain_text || t.text?.content || "").join(" ").trim();
+const titleOf = (p) => plain(p?.Question?.title || []);
+const answerOf = (p) => plain(p?.Answer?.rich_text || []);
+const norm = (s) => (s || "").toLowerCase().normalize("NFKD").replace(/[^\p{L}\p{N}\s]/gu,"").replace(/\s+/g," ").trim();
+
+// simpel fuzzy (Dice-koefficient)
+function dice(a, b) {
+  a = norm(a); b = norm(b);
+  if (!a || !b) return 0;
+  const bg = s => Array.from({length: s.length-1}, (_,i)=> s.slice(i,i+2));
+  const A = bg(a), B = bg(b);
+  if (A.length <= 0 || B.length <= 0) return 0;
+  let matches = 0; const setB = [...B];
+  for (const x of A) {
+    const i = setB.indexOf(x);
+    if (i !== -1) { matches++; setB.splice(i,1); }
+  }
+  return (2*matches) / (A.length + B.length);
+}
+
+// OpenAI embeddings (REST)
+async function embed(text) {
+  const body = {
+    input: text,
+    model: "text-embedding-3-small",
+  };
+  const r = await fetch("https://api.openai.com/v1/embeddings", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(`OpenAI error: ${r.status}`);
+  const data = await r.json();
+  return data.data[0].embedding;
+}
+
+const cos = (a, b) => {
+  let dot=0, na=0, nb=0;
+  for (let i=0;i<a.length;i++){ const x=a[i], y=b[i]; dot+=x*y; na+=x*x; nb+=y*y; }
+  return dot / (Math.sqrt(na)*Math.sqrt(nb) || 1);
+};
+
+// hent ALLE rækker fra Notion (paged)
+async function fetchAllRows() {
+  const rows = [];
   let cursor = undefined;
   do {
     const resp = await notion.databases.query({
       database_id: DB_ID,
       start_cursor: cursor,
       page_size: 100,
+      sorts: [{ property: "Question", direction: "ascending" }]
     });
-    resp.results.forEach(p => {
-      const title = (p.properties?.Question?.title || [])
-        .map(t => t?.plain_text || "").join(" ").trim();
-      const answer = (p.properties?.Answer?.rich_text || [])
-        .map(t => t?.plain_text || "").join(" ").trim();
-      if (title && answer) out.push({ id: p.id, title, answer });
-    });
+    rows.push(...resp.results.map(r => r.properties));
     cursor = resp.has_more ? resp.next_cursor : undefined;
   } while (cursor);
-  return out;
-};
+  // filtrér til rækker som faktisk har Question & Answer
+  return rows
+    .map(p => ({ title: titleOf(p), answer: answerOf(p) }))
+    .filter(x => x.title && x.answer);
+}
 
 export default async function handler(req, res) {
   try {
-    // 1) Læs q fra query eller body
+    // 1) læs q fra query eller POST-body
     let q = new URL(req.url, "http://localhost").searchParams.get("q");
     if (!q && req.method === "POST") {
       const chunks = [];
       for await (const c of req) chunks.push(c);
       const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
-      q = body.question || "";
+      q = body.q || body.question || "";
     }
-    if (!q) return res.status(400).json({ error: "Missing q" });
+    q = (q || "").trim();
+    if (!q) {
+      return res.status(200).json({ answer: "Skriv et spørgsmål, fx: 'Hvordan kontakter jeg nye spillere?'" });
+    }
 
-    // 2) Hent alle rækker fra Notion
-    const bank = await getRows();
-    if (!bank.length) return res.status(500).json({ error: "Empty database" });
+    // 2) hent bank fra Notion
+    const bank = await fetchAllRows();
 
-    // --- Quick exact title contains (hurtigt “starts-with/contains”) ---
-    const qNorm = normalize(q);
-    const quick = bank.find(it => {
-      const t = normalize(it.title);
-      return t.includes(qNorm) || qNorm.includes(t);
-    });
-    if (quick) return res.status(200).json({ answer: quick.answer });
+    // 3) hurtig exact/contains i title (Notion filter kan også bruges, men bank er i RAM nu)
+    {
+      const nq = norm(q);
+      const hit = bank.find(it => norm(it.title).includes(nq));
+      if (hit) return res.status(200).json({ answer: hit.answer });
+    }
 
-    // --- (Valgfri) Embeddings, hvis OPENAI_API_KEY findes ---
-    const useEmb = !!process.env.OPENAI_API_KEY;
-    if (useEmb) {
-      // fetch er global i Vercel edge/node 18+
-      const embed = async (text) => {
-        const r = await fetch("https://api.openai.com/v1/embeddings", {
-          method: "POST",
-          headers: {
-            "Authorization": `Bearer ${process.env.OPENAI_API_KEY}`,
-            "Content-Type": "application/json"
-          },
-          body: JSON.stringify({
-            input: text,
-            model: "text-embedding-3-small"
-          })
-        });
-        const j = await r.json();
-        if (!r.ok) throw new Error(j.error?.message || "Embedding failed");
-        return j.data[0].embedding;
-      };
-      const dot = (a,b) => a.reduce((s,v,i)=>s+v*b[i],0);
-      const mag = (a) => Math.sqrt(a.reduce((s,v)=>s+v*v,0));
-      const cosSim = (a,b) => dot(a,b)/(mag(a)*mag(b) || 1);
+    // 4) Embeddings (kun hvis OPENAI_API_KEY findes)
+    if (OPENAI_API_KEY) {
+      try {
+        const qvec = await embed(q);
+        let best = { score: -1, item: null };
+        for (const it of bank) {
+          const ivec = await embed(it.title); // (simpelt: embed hver gang; for speed kan du cache)
+          const score = cos(qvec, ivec);
+          if (score > best.score) best = { score, item: it };
+        }
+        // styr tærsklen efter behov (0.78 er konservativt)
+        if (best.item && best.score >= 0.78) {
+          return res.status(200).json({ answer: best.item.answer });
+        }
+      } catch (e) {
+        // fald blot videre til keyword/fuzzy
+        console.error("Embeddings fejlede:", e.message);
+      }
+    }
 
-      // embed bank (cache i memory pr. cold start)
-      const all = [];
+    // 5) Keyword fallback (dansk rekrutter/“kontakt” m.m.)
+    {
+      const nq = norm(q);
+      const keywords = [
+        "kontakt", "kontaktperson", "kontakt spillere", "rekrutter", "rekruttering", "rekruttere",
+        "scholarship", "stipendium", "kollegie", "college", "ansøgning", "tryouts", "prøve",
+        "træning", "skole", "studie", "visa", "visum"
+      ];
+      const keyHit = bank.find(it =>
+        keywords.some(k => norm(it.title).includes(k)) &&
+        keywords.some(k => nq.includes(k))
+      );
+      if (keyHit) return res.status(200).json({ answer: keyHit.answer });
+    }
+
+    // 6) Fuzzy fallback på title
+    {
+      let best = { score: -1, item: null };
       for (const it of bank) {
-        const e = await embed(it.title);
-        all.push({ ...it, embedding: e });
+        const s = dice(q, it.title);
+        if (s > best.score) best = { score: s, item: it };
       }
-      const qe = await embed(q);
-      let best = { score:-1, item:null };
-      for (const it of all) {
-        const s = cosSim(qe, it.embedding);
-        if (s > best.score) best = { score:s, item:it };
-      }
-      // Tærskel – 0.27 plejer at være fint til korte titler
-      if (best.item && best.score >= 0.27) {
+      if (best.item && best.score >= 0.4) {
         return res.status(200).json({ answer: best.item.answer });
       }
     }
 
-    // --- Keyword fallback (DK/NO/EN synonymer) ---
-    const ql = qNorm;
-    const contactHit =
-      (ql.includes("kontakt") || ql.includes("skriv") || ql.includes("besked") || ql.includes("message") ) &&
-      bank.find(it => normalize(it.title).includes("kontakt"));
-    if (contactHit) return res.status(200).json({ answer: contactHit.answer });
-
-    const recruitHit =
-      (ql.includes("rekrut") || ql.includes("recruit") || ql.includes("spill") || ql.includes("spiller")) &&
-      bank.find(it => /rekrut|recruit/i.test(it.title));
-    if (recruitHit) return res.status(200).json({ answer: recruitHit.answer });
-
-    // --- Fuzzy backup ---
-    let best = { dist: Infinity, item: null };
-    for (const it of bank) {
-      const d = levenshtein(q, it.title);
-      if (d < best.dist) best = { dist:d, item:it };
-    }
-    const maxDist = Math.max(2, Math.ceil(q.length * 0.35)); // tolerant for korte spørgsmål
-    if (best.item && best.dist <= maxDist) {
-      return res.status(200).json({ answer: best.item.answer });
-    }
-
-    // Intet fundet
+    // 7) Til sidst: standard svar
     return res.status(200).json({ answer: "Sorry, I couldn't find an answer." });
+
   } catch (err) {
-    return res.status(500).json({ error: err.message || "Server error" });
+    console.error(err);
+    return res.status(200).json({ answer: "Sorry, I couldn't find an answer." });
   }
 }
