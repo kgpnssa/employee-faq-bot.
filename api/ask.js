@@ -1,62 +1,118 @@
 // /api/ask.js
-import { createClient } from '@supabase/supabase-js';
-import OpenAI from 'openai';
+// Node/Serverless function for Vercel
 
-// Setup clients
+import { createClient } from '@supabase/supabase-js';
+
+// ---- env (set in Vercel) ----
+// SUPABASE_URL
+// SUPABASE_SERVICE_ROLE_KEY
+// OPENAI_API_KEY
+
 const supabase = createClient(
   process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
+  process.env.SUPABASE_SERVICE_ROLE_KEY,
+  {
+    auth: { persistSession: false },
+  }
 );
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// quick util
+const ok = (res, data) => res.status(200).json(data);
+const bad = (res, msg, code = 400) => res.status(code).json({ error: msg });
 
+// Normalize/clean query a little
+const normalize = (s = '') =>
+  (s || '')
+    .toString()
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+
+/**
+ * Get OpenAI embedding
+ */
+async function embed(text) {
+  const resp = await fetch('https://api.openai.com/v1/embeddings', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+    },
+    body: JSON.stringify({
+      model: 'text-embedding-3-small', // 1536-dim
+      input: text,
+    }),
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => '');
+    throw new Error(`OpenAI embeddings failed: ${resp.status} ${body}`);
+  }
+
+  const json = await resp.json();
+  return json.data[0].embedding;
+}
+
+/**
+ * Ask handler
+ * - GET /api/ask?q=...
+ * - POST { q: "..." }
+ */
 export default async function handler(req, res) {
   try {
-    const { query } = req.body;
-    if (!query) {
-      return res.status(400).json({ error: 'No query provided' });
+    // CORS (optional, safe default)
+    if (req.method === 'OPTIONS') {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+      return res.status(204).end();
     }
+    res.setHeader('Access-Control-Allow-Origin', '*');
 
-    // 1. Create embedding for the question
-    const embeddingResponse = await openai.embeddings.create({
-      model: 'text-embedding-3-small',
-      input: query,
-    });
+    // Read question
+    const q =
+      req.method === 'POST'
+        ? (req.body?.q ?? req.body?.question ?? '')
+        : (req.query?.q ?? '');
 
-    const [{ embedding }] = embeddingResponse.data;
+    const question = normalize(q);
+    if (!question) return bad(res, 'Missing q');
 
-    // 2. Find the most relevant FAQ in Supabase using vector similarity
+    // 1) Create query embedding
+    const queryEmbedding = await embed(question);
+
+    // 2) Call RPC to match against faqs (you create this function once; see note below)
+    // tweak these if you want
+    const MATCH_COUNT = 5;
+    const MATCH_THRESHOLD = 0.22; // lower = more results
+
     const { data: matches, error } = await supabase.rpc('match_faqs', {
-      query_embedding: embedding,
-      match_threshold: 0.7,  // adjust threshold
-      match_count: 3,        // how many answers to return
+      query_embedding: queryEmbedding,
+      match_threshold: MATCH_THRESHOLD,
+      match_count: MATCH_COUNT,
     });
 
     if (error) throw error;
 
     if (!matches || matches.length === 0) {
-      return res.json({ answer: "I couldn’t find anything relevant in the FAQ." });
+      return ok(res, { answer: "Sorry, I couldn't find an answer." });
     }
 
-    // 3. Use the top match to craft an answer
-    const context = matches.map(m => m.answer).join('\n');
+    // top hit
+    const top = matches[0]; // { id, question, answer, score }
+    if (!top?.answer) {
+      return ok(res, { answer: "Sorry, I couldn't find an answer." });
+    }
 
-    const completion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [
-        { role: 'system', content: 'You are an assistant answering questions from the Employee Handbook FAQ.' },
-        { role: 'user', content: `Question: ${query}\n\nContext: ${context}` }
-      ],
-      max_tokens: 200,
+    // Return best answer; include meta if you like
+    return ok(res, {
+      answer: top.answer,
+      matched_question: top.question,
+      score: top.score,
     });
-
-    const answer = completion.choices[0].message.content;
-
-    res.json({ answer });
   } catch (err) {
-    console.error('❌ Error in ask.js:', err);
-    res.status(500).json({ error: 'Something went wrong.' });
+    console.error('[ask] error:', err);
+    return bad(res, 'Server error', 500);
   }
 }
