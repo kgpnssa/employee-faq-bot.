@@ -138,7 +138,7 @@ export default async function handler(req, res) {
         const s = dice(q, it.title);
         if (s > best.score) best = { score: s, item: it };
       }
-      if (best.item && best.score >= 0.4) {
+      if (best.item && best.score >= 0.7) {
         return res.status(200).json({ answer: best.item.answer });
       }
     }
