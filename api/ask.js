@@ -161,7 +161,7 @@ export default async function handler(req, res) {
     }
 
     // tærskel (justér hvis du vil være mere/ mindre kræsen)
-    if (best.item && best.score >= 0.7) {
+    if (best.item && best.score >= 0.6) {
       return res.status(200).json({ answer: best.item.answer, _score: +best.score.toFixed(3) });
     }
 
