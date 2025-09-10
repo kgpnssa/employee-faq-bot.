@@ -1,6 +1,9 @@
 // /api/ask.js
 // Node/Serverless function for Vercel
 
+import fetch from "node-fetch";
+global.fetch = fetch;
+
 import { createClient } from '@supabase/supabase-js';
 
 // ---- env (set in Vercel) ----
