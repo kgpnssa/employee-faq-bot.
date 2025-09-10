@@ -161,9 +161,25 @@ export default async function handler(req, res) {
     }
 
     // tærskel (justér hvis du vil være mere/ mindre kræsen)
-    if (best.item && best.score >= 0.6) {
-      return res.status(200).json({ answer: best.item.answer, _score: +best.score.toFixed(3) });
-    }
+   if (best.item && best.score >= 0.7) {
+  return res.status(200).json({ answer: best.item.answer });
+}
+
+// 🔑 keyword fallback
+if (!best.item) {
+  const qNorm = q.toLowerCase();
+  const keywordHit = bank.find(it =>
+    (qNorm.includes("kontakt") && it.title.toLowerCase().includes("kontakt")) ||
+    (qNorm.includes("rekrutter") && it.title.toLowerCase().includes("recruit"))
+  );
+
+  if (keywordHit) {
+    return res.status(200).json({ answer: keywordHit.answer });
+  }
+}
+
+// fallback hvis stadig intet
+return res.status(200).json({ answer: "Sorry, I couldn't find an answer." });
 
     // 3) fuzzy backup hvis embeddings-score var lav
     let fuzzy = { score: 0, item: null };
