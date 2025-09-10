@@ -1,142 +1,136 @@
-// api/ask.js
-import { Client } from "@notionhq/client";
+// /pages/api/ask.js
 
-// --- Notion setup ---
-const notion = new Client({ auth: process.env.NOTION_TOKEN });
-const DB_ID = process.env.NOTION_DB_ID;
+import { createClient } from '@supabase/supabase-js';
+import OpenAI from 'openai';
+
+// --- Environment checks ---
+const required = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'OPENAI_API_KEY'];
+for (const k of required) {
+  if (!process.env[k]) {
+    console.error(`[ask] Missing required env var: ${k}`);
+  }
+}
+
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // --- Helpers ---
-const normalize = (s = "") =>
-  (s || "")
-    .toString()
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "") // strip accents
-    .toLowerCase()
-    .trim();
+const normalize = (s = '') => s.toLowerCase().trim();
 
-const getTitle = (page) =>
-  (page?.properties?.Question?.title || [])
-    .map((t) => t?.plain_text || "")
-    .join(" ")
-    .trim();
-
-const getAnswer = (page) => {
-  // support rich_text or text
-  const from = page?.properties?.Answer?.rich_text ?? page?.properties?.Answer?.text ?? [];
-  const txt = (from || []).map((t) => t?.plain_text || "").join(" ").trim();
-  return txt || "Sorry, I couldn’t find an answer.";
-};
-
-// fetch all rows in the DB (handles pagination)
-async function fetchAllRows(dbId) {
-  const results = [];
-  let cursor = undefined;
-  do {
-    const resp = await notion.databases.query({
-      database_id: dbId,
-      start_cursor: cursor,
-      page_size: 100,
-    });
-    results.push(...resp.results);
-    cursor = resp.has_more ? resp.next_cursor : undefined;
-  } while (cursor);
-  return results.map((p) => {
-    const title = getTitle(p);
-    return {
-      title,
-      titleNorm: normalize(title),
-      answer: getAnswer(p),
-    };
-  });
-}
-
-// in-memory cache (simple and good enough here)
-let BANK = null;
-let BANK_LOADED_AT = 0;
-async function getBank() {
-  const maxAgeMs = 1000 * 60 * 5; // 5 minutes
-  if (!BANK || Date.now() - BANK_LOADED_AT > maxAgeMs) {
-    BANK = await fetchAllRows(DB_ID);
-    BANK_LOADED_AT = Date.now();
+function keywordFallback(q) {
+  const t = normalize(q);
+  if (
+    (t.includes('kontakt') || t.includes('kontaktinfo') || t.includes('kontor') || t.includes('adresse')) ||
+    (t.includes('contact') || t.includes('office') || t.includes('address'))
+  ) {
+    return 'Kontoradresse: (indsæt jeres adresse). Email: (indsæt), Telefon: (indsæt).';
   }
-  return BANK;
+  if (
+    t.includes('rekrutter') || t.includes('rekruttér') || t.includes('rekruttering') ||
+    t.includes('recruit') || t.includes('new players') || t.includes('spillere')
+  ) {
+    return 'Til rekruttering bruger vi primært Instagram/X i DE/SE og Facebook/Messenger i DK/NO. Start med en venlig intro, hvem du er, og hvorfor spilleren passer til NSSA.';
+  }
+  return null;
 }
 
-// --- Main handler ---
+function toContext(matches, max = 5) {
+  return matches.slice(0, max).map(m => `Q: ${m.question}\nA: ${m.answer}`).join('\n\n');
+}
+
+function maybeDirectAnswer(matches, hi = 0.92) {
+  if (!matches?.length) return null;
+  const best = matches[0];
+  if (best.similarity >= hi) return best.answer?.trim();
+  return null;
+}
+
+// --- Main API handler ---
 export default async function handler(req, res) {
   try {
-    // read q from query OR POST body
-    let q =
-      new URL(req.url, "http://localhost").searchParams.get("q") || "";
-    if (!q && req.method === "POST") {
-      const chunks = [];
-      for await (const c of req) chunks.push(c);
-      const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
-      q = body.q || "";
-    }
-    q = (q || "").trim();
-    if (!q) return res.status(400).json({ error: "Missing q" });
+    const q =
+      req.method === 'GET'
+        ? (req.query.q || '').toString()
+        : (req.body?.query || req.body?.q || '').toString();
 
-    const bank = await getBank();
-    const qNorm = normalize(q);
-
-    // 1) EXACT / STRONG PARTIAL MATCHES FIRST
-    // exact normalized equality
-    let exact = bank.find((it) => it.titleNorm === qNorm);
-    if (exact) return res.status(200).json({ answer: exact.answer });
-
-    // strong partial (title contains full query tokens)
-    const qTokens = qNorm.split(/\W+/).filter(Boolean);
-    if (qTokens.length) {
-      const partial = bank.find((it) =>
-        qTokens.every((w) => it.titleNorm.includes(w))
-      );
-      if (partial) return res.status(200).json({ answer: partial.answer });
+    if (!q || q.trim().length < 2) {
+      return res.status(400).json({ error: 'Missing query. Provide ?q=... or { query: ... }' });
     }
 
-    // 2) KEYWORD FALLBACK (metode 2) — safer scoring with a higher threshold
-    const KEYWORD_GROUPS = [
-      ["rekrutter", "rekruter", "rekrutt", "kontakt", "spillere", "spiller"],
-      ["kontor", "adresse", "office", "kontoradresse"],
-      ["mission", "vision", "formaal", "formål", "purpose"],
-      ["stipendier", "scholarship", "stipendium"],
-      ["college", "universitet", "uni"],
-    ];
-    const KEYWORDS = [...new Set(KEYWORD_GROUPS.flat())];
+    // 0) Keyword fallback
+    const kw = keywordFallback(q);
+    if (kw) return res.status(200).json({ answer: kw, source: 'keyword' });
 
-    const tokens = new Set(
-      qNorm.split(/\W+/).filter((w) => w && (w.length > 3 || KEYWORDS.includes(w)))
-    );
+    // 1) Create embedding for user query
+    const embedResp = await openai.embeddings.create({
+      model: 'text-embedding-3-small',
+      input: q
+    });
+    const userEmbedding = embedResp.data?.[0]?.embedding;
+    if (!userEmbedding) throw new Error('No embedding returned from OpenAI');
 
-    let best = null; // { score, item }
-    for (const it of bank) {
-      const tWords = new Set(it.titleNorm.split(/\W+/));
-      let score = 0;
+    // 2) Call match_faqs SQL function in Supabase
+    const { data: matches, error } = await supabase.rpc('match_faqs', {
+      query_embedding: userEmbedding,
+      match_count: 8
+    });
+    if (error) throw error;
 
-      // exact word overlap is strong → 2 points each
-      for (const w of tokens) if (tWords.has(w)) score += 2;
+    const MIN_SIM = 0.78;
+    const top = (matches || []).filter(m => (m?.similarity ?? 0) >= MIN_SIM);
 
-      // synonym group overlap → +1
-      for (const grp of KEYWORD_GROUPS) {
-        const qHas = grp.some((g) => tokens.has(g));
-        const tHas = grp.some((g) => tWords.has(g));
-        if (qHas && tHas) score += 1;
-      }
-
-      if (!best || score > best.score) best = { score, item: it };
+    // 3) If super confident, return direct answer
+    const direct = maybeDirectAnswer(top, 0.92);
+    if (direct) {
+      return res.status(200).json({
+        answer: direct,
+        source: 'direct',
+        top: top.slice(0, 3).map(({ id, question, similarity }) => ({ id, question, similarity }))
+      });
     }
 
-    // Require a minimum score to avoid wrong mappings
-    if (best && best.score >= 2) {
-      return res.status(200).json({ answer: best.item.answer });
+    // 4) Build context for GPT
+    const context = toContext(top, 5);
+    if (!context) {
+      return res.status(200).json({
+        answer: `Jeg fandt ikke et klart svar i håndbogen på: "${q}". 
+Prøv at omformulere spørgsmålet, eller spørg mere specifikt (fx emne + land).`,
+        source: 'no_context'
+      });
     }
 
-    // 3) Final fallback
-    return res
-      .status(200)
-      .json({ answer: "Sorry, I couldn’t find an answer." });
+    const completion = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [
+        {
+          role: 'system',
+          content:
+            'Du er en hjælpsom assistent for NSSA. Svar KUN ud fra konteksten. Hvis du er i tvivl, sig ærligt, at du ikke ved det.'
+        },
+        {
+          role: 'user',
+          content:
+            `Kontekst:\n${context}\n\n` +
+            `Spørgsmål: ${q}\n\n` +
+            `Svar venligst på dansk, kort og præcist.`
+        }
+      ],
+      temperature: 0.2,
+      max_tokens: 400
+    });
+
+    const answer = completion.choices?.[0]?.message?.content?.trim() || 'Jeg er ikke sikker.';
+    return res.status(200).json({
+      answer,
+      source: 'rag',
+      top: top.slice(0, 5).map(({ id, question, similarity }) => ({ id, question, similarity }))
+    });
   } catch (err) {
-    console.error("ask.js error:", err);
-    return res.status(500).json({ error: "Server error." });
+    console.error('[ask] Error:', err);
+    return res.status(500).json({ error: err?.message || 'Server error' });
   }
 }
