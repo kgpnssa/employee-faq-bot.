@@ -1,9 +1,0 @@
-{
-  "name": "employee-faq-bot",
-  "version": "1.0.0",
-  "type": "module",
-  "dependencies": {
-    "@notionhq/client": "^2.2.14",
-    "openai": "^4.55.0"
-  }
-}
