@@ -1,181 +1,101 @@
-// /api/ask.js
 import { Client } from "@notionhq/client";
 
-// ---------- Config ----------
 const notion = new Client({ auth: process.env.NOTION_TOKEN });
 const DB_ID = process.env.NOTION_DB_ID;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const EMBEDDING_MODEL = "text-embedding-3-small"; // cheap & good
-const TOP_K = 1;        // how many nearest neighbors to consider
-const MIN_SIM = 0.72;   // similarity floor to accept a match (0..1)
 
-// ---------- Small helpers ----------
-const title = (p) =>
-  (p?.Question?.title || []).map((t) => t.plain_text).join(" ").trim();
-const answer = (p) =>
-  (p?.Answer?.rich_text || []).map((t) => t.plain_text).join(" ").trim();
+// helpers to read Notion rich text / title
+const title = (p) => (p?.Question?.title || []).map(t => t.plain_text).join(" ").trim();
+const answer = (p) => (p?.Answer?.rich_text || []).map(t => t.plain_text).join(" ").trim();
 
-const norm = (s = "") =>
-  s.toLowerCase().normalize("NFKC").replace(/\s+/g, " ").trim();
+// --- text utils ---
+const normalize = (s) =>
+  (s || "")
+    .toLowerCase()
+    .replace(/[?!.,:;()\[\]{}/\\'"`~^%€$#@*-]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
-const cosine = (a, b) => {
-  let dot = 0, na = 0, nb = 0;
-  for (let i = 0; i < a.length; i++) {
-    const x = a[i], y = b[i];
-    dot += x * y; na += x * x; nb += y * y;
-  }
-  return dot / (Math.sqrt(na) * Math.sqrt(nb) + 1e-12);
-};
-
-async function embed(text) {
-  const res = await fetch("https://api.openai.com/v1/embeddings", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${OPENAI_API_KEY}`,
-    },
-    body: JSON.stringify({ model: EMBEDDING_MODEL, input: text }),
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Embedding error: ${res.status} ${err}`);
-  }
-  const data = await res.json();
-  return data.data[0].embedding;
-}
-
-async function fetchAllRows() {
-  const rows = [];
-  let cursor = undefined;
-  do {
-    const page = await notion.databases.query({
-      database_id: DB_ID,
-      start_cursor: cursor,
-      page_size: 100,
-    });
-    rows.push(...page.results);
-    cursor = page.has_more ? page.next_cursor : undefined;
-  } while (cursor);
-  return rows.map((r) => ({
-    id: r.id,
-    q: title(r.properties),
-    a: answer(r.properties),
-  })).filter((r) => r.q && r.a);
-}
-
-// ---------- In-memory cache (per serverless cold start) ----------
-let CACHE = {
-  rows: null,               // [{id, q, a}]
-  embeddings: null,         // Float32Array[]
-  qnorm: null,              // normalized question strings
-  loadedAt: 0,
-};
-
-async function ensureCache() {
-  if (CACHE.rows && CACHE.embeddings && Date.now() - CACHE.loadedAt < 1000 * 60 * 10) {
-    return CACHE;
-  }
-  const rows = await fetchAllRows();
-
-  // Precompute embeddings (batched lightly)
-  const qnorm = rows.map((r) => norm(r.q));
-  const allEmbeds = [];
-  for (let i = 0; i < rows.length; i += 32) {
-    const chunk = qnorm.slice(i, i + 32);
-    const res = await fetch("https://api.openai.com/v1/embeddings", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${OPENAI_API_KEY}`,
-      },
-      body: JSON.stringify({ model: EMBEDDING_MODEL, input: chunk }),
-    });
-    if (!res.ok) {
-      const err = await res.text();
-      throw new Error(`Batch embedding error: ${res.status} ${err}`);
+function diceCoefficient(a, b) {
+  a = normalize(a); b = normalize(b);
+  if (!a || !b) return 0;
+  if (a === b) return 1;
+  // build bigram sets
+  const bigrams = (str) => {
+    const out = new Map();
+    for (let i = 0; i < str.length - 1; i++) {
+      const bg = str.slice(i, i + 2);
+      out.set(bg, (out.get(bg) || 0) + 1);
     }
-    const data = await res.json();
-    data.data.forEach((d) => allEmbeds.push(d.embedding));
-  }
-
-  CACHE = {
-    rows,
-    embeddings: allEmbeds,
-    qnorm,
-    loadedAt: Date.now(),
+    return out;
   };
-  return CACHE;
+  const A = bigrams(a), B = bigrams(b);
+  let overlap = 0;
+  for (const [bg, cnt] of A) {
+    const inB = B.get(bg) || 0;
+    overlap += Math.min(cnt, inB);
+  }
+  const sizeA = Array.from(A.values()).reduce((s, n) => s + n, 0);
+  const sizeB = Array.from(B.values()).reduce((s, n) => s + n, 0);
+  return (2 * overlap) / (sizeA + sizeB || 1);
 }
 
-// ---------- Handler ----------
 export default async function handler(req, res) {
   try {
-    // 1) read q from GET ?q= or POST JSON {question}
+    // read q from ?q=... or POST body
     let q = new URL(req.url, "http://localhost").searchParams.get("q");
     if (!q && req.method === "POST") {
       const chunks = [];
       for await (const c of req) chunks.push(c);
       const body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
-      q = body?.question || body?.q || "";
+      q = body.q || body.question || "";
     }
-    q = (q || "").toString().trim();
     if (!q) return res.status(400).json({ error: "Missing q" });
 
-    // 2) Exact / partial title match first (fast)
-    const exact = await notion.databases.query({
-      database_id: DB_ID,
-      filter: {
-        property: "Question",
-        title: { contains: q }, // "contains" enables partial keyword hits
-      },
-      page_size: 1,
-    });
-    if (exact.results?.length) {
-      return res.status(200).json({
-        answer: answer(exact.results[0].properties),
-        matched: title(exact.results[0].properties),
-        via: "exact",
+    const qNorm = normalize(q);
+
+    // pull up to 100 rows once, then match locally (more robust than strict API filter)
+    const rows = [];
+    let cursor = undefined;
+    do {
+      const resp = await notion.databases.query({
+        database_id: DB_ID,
+        page_size: 100,
+        start_cursor: cursor,
       });
+      rows.push(...resp.results);
+      cursor = resp.has_more ? resp.next_cursor : undefined;
+    } while (cursor && rows.length < 300);
+
+    // build light objects {title, answer}
+    const items = rows
+      .map(r => ({
+        title: title(r.properties),
+        answer: answer(r.properties),
+      }))
+      .filter(it => it.title && it.answer);
+
+    // 1) exact/contains on normalized strings
+    const normMap = items.map(it => ({ ...it, tNorm: normalize(it.title) }));
+    let hit = normMap.find(it => it.tNorm === qNorm)
+           || normMap.find(it => it.tNorm.includes(qNorm))
+           || normMap.find(it => qNorm.includes(it.tNorm) && it.tNorm.length >= 5);
+
+    if (hit) return res.status(200).json({ answer: hit.answer });
+
+    // 2) fuzzy (Dice on bigrams)
+    let best = { score: 0, item: null };
+    for (const it of items) {
+      const s = diceCoefficient(it.title, q);
+      if (s > best.score) best = { score: s, item: it };
     }
 
-    // 3) Semantic fallback (embeddings)
-    const { rows, embeddings, qnorm } = await ensureCache();
-    if (!rows.length) return res.status(200).json({ answer: "No entries yet." });
-
-    const qEmbed = await embed(norm(q));
-
-    let bestIdx = -1, bestSim = -1;
-    for (let i = 0; i < embeddings.length; i++) {
-      const sim = cosine(qEmbed, embeddings[i]);
-      if (sim > bestSim) { bestSim = sim; bestIdx = i; }
+    if (best.item && best.score >= 0.58) { // just under 0.6 for Danish punctuation etc.
+      return res.status(200).json({ answer: best.item.answer, _score: best.score });
     }
 
-    if (bestIdx >= 0 && bestSim >= MIN_SIM) {
-      return res.status(200).json({
-        answer: rows[bestIdx].a,
-        matched: rows[bestIdx].q,
-        similarity: Number(bestSim.toFixed(3)),
-        via: "semantic",
-      });
-    }
-
-    // 4) Nothing strong enough
-    return res.status(200).json({
-      answer: "Sorry, I couldn’t find a good match for that yet.",
-      via: "none",
-    });
-
+    return res.status(200).json({ answer: "Sorry, I couldn't find an answer." });
   } catch (err) {
     console.error(err);
-    const msg = err?.message || "Server error";
-    if (/unauthorized|invalid api key/i.test(msg)) {
-      return res.status(401).json({ error: "OpenAI API key is invalid or missing." });
-    }
-    if (/object_not_found|could not find database/i.test(msg)) {
-      return res.status(400).json({
-        error: "Notion DB not found or not shared with the integration.",
-      });
-    }
-    return res.status(500).json({ error: msg });
+    return res.status(500).json({ error: "Failed to fetch from Notion" });
   }
 }
